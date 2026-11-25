@@ -47,9 +47,12 @@ def http_get(url: str) -> str:
         out = subprocess.run(cmd + [url], capture_output=True)
         if out.returncode == 0:
             return out.stdout.decode("utf-8")
-        print(f"Abruf {url} fehlgeschlagen (Versuch {attempt + 1}): {out.stderr.decode('utf-8', 'replace').strip()}")
+        print(f"::warning::Abruf {url} fehlgeschlagen (Versuch {attempt + 1}): "
+              f"{out.stderr.decode('utf-8', 'replace').strip()}")
         time.sleep(10)
-    sys.exit(1)
+    # Kein Fehler-Status: der naechste Lauf versucht es einfach wieder
+    print("::warning::Playtomic nicht erreichbar, Lauf uebersprungen")
+    sys.exit(0)
 
 
 # ---------- Playtomic ----------
@@ -92,9 +95,9 @@ def tg(method: str, **params):
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        print(f"Telegram-Fehler bei {method}: {e.code} {e.read().decode('utf-8', 'replace')[:200]}")
+        print(f"::warning::Telegram-Fehler bei {method}: {e.code} {e.read().decode('utf-8', 'replace')[:200]}")
     except Exception as e:  # Netzwerkfehler sollen den Lauf nicht abbrechen
-        print(f"Telegram-Fehler bei {method}: {e}")
+        print(f"::warning::Telegram-Fehler bei {method}: {type(e).__name__}")
     return {}
 
 
@@ -114,12 +117,12 @@ def fmt(e: dict) -> str:
 
 def handle_commands(state: dict, events: list[dict]):
     if not TOKEN:
-        print("Hinweis: TELEGRAM_TOKEN ist nicht gesetzt.")
+        print("::notice::TELEGRAM_TOKEN ist nicht gesetzt")
         return
     me = tg("getMe")
-    print("Telegram-Bot:", (me.get("result") or {}).get("username", "nicht erreichbar"))
     res = tg("getUpdates", offset=state.get("tg_offset", 0), timeout=0)
-    print("Neue Telegram-Nachrichten:", len(res.get("result", [])), "| Chat verbunden:", bool(state.get("chat_id")))
+    print(f"::notice::Telegram-Bot erreichbar: {bool(me.get('ok'))} | neue Nachrichten: "
+          f"{len(res.get('result', []))} | Chat verbunden: {bool(state.get('chat_id') or os.environ.get('TELEGRAM_CHAT_ID'))}")
     for u in res.get("result", []):
         state["tg_offset"] = u["update_id"] + 1
         msg = u.get("message") or {}
@@ -185,4 +188,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        import traceback
+        tb = traceback.extract_tb(exc.__traceback__)[-1]
+        print(f"::error::{type(exc).__name__} in Zeile {tb.lineno} ({tb.name}): {str(exc).replace(TOKEN, '***') if TOKEN else exc}")
+        raise
