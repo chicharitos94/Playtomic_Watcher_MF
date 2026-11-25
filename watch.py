@@ -29,7 +29,13 @@ PAGES = ["competitions/tournaments", "academy/public-classes"]
 TITLE_FILTER: list[str] = []
 
 STATE_FILE = Path(__file__).with_name("state.json")
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+_raw_token = os.environ.get("TELEGRAM_TOKEN", "")
+# Token auch dann finden, wenn beim Kopieren Text/Leerzeichen/Anfuehrungszeichen mitgekommen sind
+_m = re.search(r"\d{6,}:[A-Za-z0-9_-]{30,}", _raw_token)
+TOKEN = _m.group(0) if _m else _raw_token.strip()
+if _raw_token:
+    print(f"::notice::Secret-Laenge {len(_raw_token)} Zeichen, Token-Format erkannt: {bool(_m)}"
+          + ("" if not _m or _m.group(0) == _raw_token else " (Zusatztext entfernt)"))
 UA = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/131.0 Safari/537.36",
