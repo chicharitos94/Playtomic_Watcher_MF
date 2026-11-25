@@ -17,6 +17,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -41,8 +43,13 @@ def http_get(url: str) -> str:
     cmd = ["curl", "-sS", "--fail", "--compressed", "-m", "30"]
     for k, v in UA.items():
         cmd += ["-H", f"{k}: {v}"]
-    out = subprocess.run(cmd + [url], capture_output=True, check=True)
-    return out.stdout.decode("utf-8")
+    for attempt in range(3):
+        out = subprocess.run(cmd + [url], capture_output=True)
+        if out.returncode == 0:
+            return out.stdout.decode("utf-8")
+        print(f"Abruf {url} fehlgeschlagen (Versuch {attempt + 1}): {out.stderr.decode('utf-8', 'replace').strip()}")
+        time.sleep(10)
+    sys.exit(1)
 
 
 # ---------- Playtomic ----------
@@ -81,8 +88,14 @@ def get_events(page: str) -> list[dict]:
 def tg(method: str, **params):
     data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/{method}", data=data)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print(f"Telegram-Fehler bei {method}: {e.code} {e.read().decode('utf-8', 'replace')[:200]}")
+    except Exception as e:  # Netzwerkfehler sollen den Lauf nicht abbrechen
+        print(f"Telegram-Fehler bei {method}: {e}")
+    return {}
 
 
 def send(state: dict, text: str):
@@ -101,8 +114,12 @@ def fmt(e: dict) -> str:
 
 def handle_commands(state: dict, events: list[dict]):
     if not TOKEN:
+        print("Hinweis: TELEGRAM_TOKEN ist nicht gesetzt.")
         return
+    me = tg("getMe")
+    print("Telegram-Bot:", (me.get("result") or {}).get("username", "nicht erreichbar"))
     res = tg("getUpdates", offset=state.get("tg_offset", 0), timeout=0)
+    print("Neue Telegram-Nachrichten:", len(res.get("result", [])), "| Chat verbunden:", bool(state.get("chat_id")))
     for u in res.get("result", []):
         state["tg_offset"] = u["update_id"] + 1
         msg = u.get("message") or {}
