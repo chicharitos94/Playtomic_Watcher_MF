@@ -49,16 +49,20 @@ def http_get(url: str) -> str:
             return out.stdout.decode("utf-8")
         print(f"::warning::Abruf {url} fehlgeschlagen (Versuch {attempt + 1}): "
               f"{out.stderr.decode('utf-8', 'replace').strip()}")
+        if out.returncode == 22 and b"403" in out.stderr:
+            break  # geblockt: Wiederholen bringt auf demselben Server nichts
         time.sleep(10)
     # Kein Fehler-Status: der naechste Lauf versucht es einfach wieder
-    print("::warning::Playtomic nicht erreichbar, Lauf uebersprungen")
-    sys.exit(0)
+    print("::warning::Playtomic nicht erreichbar, Pruefung uebersprungen")
+    return None
 
 
 # ---------- Playtomic ----------
 def get_events(page: str) -> list[dict]:
     url = f"https://playtomic.com/clubs/{CLUB}/{page}"
     doc = http_get(url)
+    if doc is None:
+        return None
     doc = re.sub(r"(?s)<script.*?</script>", "", doc)
     doc = re.sub(r"(?s)<svg.*?</svg>", "", doc)
     # Next.js streamt Karteninhalt und Karten-Links in getrennten Bloecken, gleiche Reihenfolge
@@ -140,7 +144,7 @@ def handle_commands(state: dict, events: list[dict]):
         if cmd in ("aus", "stop", "pause", "off"):
             state["paused"] = True
             send(state, "⏸ Pausiert. Mit /an geht's weiter.")
-        elif cmd in ("an", "start", "ein", "on"):
+        elif cmd in ("an", "ein", "on"):
             state["paused"] = False
             send(state, "▶️ Läuft wieder. Du bekommst Meldungen zu freien Plätzen.")
         elif cmd == "status":
@@ -148,7 +152,8 @@ def handle_commands(state: dict, events: list[dict]):
         elif cmd in ("liste", "list"):
             lines = [f"{'🔴' if e['taken'] >= e['max'] else '🟢'} {e['date']} – {html.escape(e['title'])} "
                      f"({e['taken']}/{e['max']})" for e in events]
-            send(state, "\n".join(lines) or "Keine Events gefunden.")
+            send(state, "\n".join(lines) if events is not None
+                 else "Playtomic war diesmal nicht erreichbar – versuch es gleich nochmal.")
 
 
 # ---------- Ablauf ----------
@@ -159,12 +164,19 @@ def main():
 
     events = []
     for p in PAGES:
-        events += get_events(p)
-    if not events:
-        print("Keine Events gefunden – hat sich die Seite geändert?")
-        sys.exit(2)
+        got = get_events(p)
+        if got is None:          # Playtomic hat diesen Server geblockt
+            events = None
+            break
+        events += got
+    if events == []:
+        print("::error::Keine Events gefunden – hat sich die Seite geändert?")
 
+    # Befehle immer verarbeiten, auch wenn Playtomic gerade nicht erreichbar war
     handle_commands(state, events)
+    if not events:
+        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True), "utf-8")
+        return
 
     new_known = {}
     for e in events:
