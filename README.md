@@ -15,7 +15,7 @@ Telegram-Nachricht, sobald in einem Event ein Platz frei wird oder ein neues Eve
 Befehle werden beim nächsten Lauf verarbeitet, also nach ein paar Minuten.
 
 ## Einrichtung
-- Repository-Secret `TELEGRAM_TOKEN` = Bot-Token von @BotFather
+- Repository-Secret `PLAYTOMIC_WATCHER_MF_BOT` = Bot-Token von @BotFather
 - Dem Bot einmal `/start` schreiben, dann wird dieser Chat automatisch verbunden.
 
 ## Komplett abschalten
