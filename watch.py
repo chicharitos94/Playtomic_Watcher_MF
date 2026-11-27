@@ -102,7 +102,8 @@ def tg(method: str, **params):
     data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/{method}", data=data)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        # Long-Polling: die Verbindung muss laenger offen bleiben als Telegram wartet
+        with urllib.request.urlopen(req, timeout=int(params.get("timeout", 0)) + 20) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         print(f"::warning::Telegram-Fehler bei {method}: {e.code} {e.read().decode('utf-8', 'replace')[:200]}")
