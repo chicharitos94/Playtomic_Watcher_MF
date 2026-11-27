@@ -1,12 +1,15 @@
 name: Playtomic Watcher
 
+# Jeder Lauf bleibt ca. 5h40 aktiv, prueft alle 3 Minuten und startet am Ende den naechsten Lauf.
+# Der stuendliche Zeitplan ist nur ein Sicherheitsnetz, falls die Kette einmal abreisst.
 on:
   schedule:
-    - cron: "*/5 * * * *"   # GitHub startet geplante Laeufe oft mit einigen Minuten Verspaetung
-  workflow_dispatch:         # manuell starten ueber den Tab "Actions"
+    - cron: "17 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: watcher
@@ -15,7 +18,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 355
+    env:
+      TZ: Europe/Zurich
     steps:
       - uses: actions/checkout@v4
 
@@ -23,18 +28,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Events pruefen
+      - name: Events pruefen (Dauerschleife)
         env:
           TELEGRAM_TOKEN: ${{ secrets.PLAYTOMIC_WATCHER_MF_BOT }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python watch.py
+        run: |
+          code=0
+          python watch.py --minutes 340 || code=$?
+          # 3 = dieser Server wird von Playtomic geblockt -> normal, naechster Lauf bekommt einen anderen
+          if [ "$code" != "0" ] && [ "$code" != "3" ]; then exit "$code"; fi
 
       - name: Zustand speichern
+        if: always()
         run: |
-          if ! git diff --quiet -- state.json || [ -n "$(git ls-files --others -- state.json)" ]; then
+          if [ -n "$(git status --porcelain -- state.json)" ]; then
             git config user.name "playtomic-watcher"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add state.json
             git commit -m "Zustand aktualisiert"
-            git push
+            git pull --rebase -X ours || true
+            git push || true
           fi
+
+      - name: Naechsten Lauf starten
+        if: always() && !cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run watch.yml --ref main

@@ -125,14 +125,15 @@ def fmt(e: dict) -> str:
             f"{free} von {e['max']} Plätzen frei\n<a href=\"{e['url']}\">In Playtomic öffnen</a>")
 
 
-def handle_commands(state: dict, events: list[dict]):
+def handle_commands(state: dict, events, wait: int = 0):
+    """Liest neue Telegram-Nachrichten. Mit wait>0 wartet Telegram bis zu wait Sekunden
+    auf eine Nachricht (Long-Polling) – so antwortet der Bot sofort."""
     if not TOKEN:
-        print("::notice::TELEGRAM_TOKEN ist nicht gesetzt")
+        time.sleep(wait)
         return
-    me = tg("getMe")
-    res = tg("getUpdates", offset=state.get("tg_offset", 0), timeout=0)
-    print(f"::notice::Telegram-Bot erreichbar: {bool(me.get('ok'))} | neue Nachrichten: "
-          f"{len(res.get('result', []))} | Chat verbunden: {bool(state.get('chat_id') or os.environ.get('TELEGRAM_CHAT_ID'))}")
+    res = tg("getUpdates", offset=state.get("tg_offset", 0), timeout=wait)
+    if not res:
+        time.sleep(min(wait, 30))
     for u in res.get("result", []):
         state["tg_offset"] = u["update_id"] + 1
         msg = u.get("message") or {}
@@ -154,36 +155,39 @@ def handle_commands(state: dict, events: list[dict]):
             state["paused"] = False
             send(state, "▶️ Läuft wieder. Du bekommst Meldungen zu freien Plätzen.")
         elif cmd == "status":
-            send(state, "⏸ Pausiert." if state.get("paused") else "▶️ Läuft – prüft etwa alle 5–15 Minuten.")
+            last = state.get("last_check")
+            send(state, ("⏸ Pausiert." if state.get("paused") else f"▶️ Läuft – prüft alle {INTERVAL // 60} Minuten.")
+                 + (f"\nLetzte erfolgreiche Prüfung: {last}" if last else ""))
         elif cmd in ("liste", "list"):
             lines = [f"{'🔴' if e['taken'] >= e['max'] else '🟢'} {e['date']} – {html.escape(e['title'])} "
-                     f"({e['taken']}/{e['max']})" for e in events]
-            send(state, "\n".join(lines) if events is not None
-                 else "Playtomic war diesmal nicht erreichbar – versuch es gleich nochmal.")
+                     f"({e['taken']}/{e['max']})" for e in (events or [])]
+            send(state, "\n".join(lines) if events
+                 else "Playtomic war eben nicht erreichbar – versuch es in ein paar Minuten nochmal.")
 
 
 # ---------- Ablauf ----------
-def main():
-    state = json.loads(STATE_FILE.read_text("utf-8")) if STATE_FILE.exists() else {}
-    first_run = "events" not in state
-    known: dict = state.get("events", {})
+INTERVAL = 180  # Sekunden zwischen zwei Playtomic-Pruefungen
 
+
+def save(state: dict):
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True), "utf-8")
+
+
+def fetch_all():
     events = []
     for p in PAGES:
         got = get_events(p)
         if got is None:          # Playtomic hat diesen Server geblockt
-            events = None
-            break
+            return None
         events += got
-    if events == []:
-        print("::error::Keine Events gefunden – hat sich die Seite geändert?")
-
-    # Befehle immer verarbeiten, auch wenn Playtomic gerade nicht erreichbar war
-    handle_commands(state, events)
     if not events:
-        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True), "utf-8")
-        return
+        print("::error::Keine Events gefunden – hat sich die Seite geändert?")
+    return events
 
+
+def check(state: dict, events: list[dict]):
+    first_run = "events" not in state
+    known: dict = state.get("events", {})
     new_known = {}
     for e in events:
         full = e["taken"] >= e["max"]
@@ -200,9 +204,39 @@ def main():
             print("Gemeldet (neu):", e["title"], e["date"])
 
     state["events"] = new_known
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1, sort_keys=True), "utf-8")
-    for e in events:
-        print(f"{e['taken']:>3}/{e['max']:<3} {e['date']:<32} {e['title']}")
+    state["last_check"] = time.strftime("%d.%m. %H:%M", time.localtime())
+
+
+def main():
+    """Laeuft bis zu --minutes Minuten und prueft alle INTERVAL Sekunden.
+    Exit-Code 3 = dieser Server wird von Playtomic geblockt -> Workflow startet neu."""
+    minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 0
+    deadline = time.time() + minutes * 60
+    state = json.loads(STATE_FILE.read_text("utf-8")) if STATE_FILE.exists() else {}
+    blocked, ok = 0, 0
+    while True:
+        events = fetch_all()
+        if events is None:
+            blocked += 1
+            print(f"::warning::Playtomic blockt diesen Server ({blocked}x)")
+        else:
+            blocked = 0
+            ok += 1
+            if events:
+                check(state, events)
+        save(state)
+        if blocked >= 2 or time.time() + INTERVAL > deadline:
+            break
+        # Wartezeit fuer Telegram-Befehle nutzen (Antwort kommt sofort)
+        next_check = time.time() + INTERVAL
+        while time.time() < next_check - 5:
+            handle_commands(state, events, wait=int(min(50, next_check - time.time())))
+            save(state)
+    handle_commands(state, events)
+    save(state)
+    print(f"::notice::{ok} erfolgreiche Pruefungen, Ende wegen {'Blockade' if blocked >= 2 else 'Zeitlimit'}")
+    if blocked >= 2:
+        sys.exit(3)
 
 
 if __name__ == "__main__":
